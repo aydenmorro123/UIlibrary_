@@ -156,11 +156,21 @@ end
 Library.Watermark.Bg = CreateWatermark("Square", {Filled=true, Transparency=0.7, Color=Color3.new(0,0,0), ZIndex=1000, Visible=true})
 Library.Watermark.Txt = CreateWatermark("Text", {Text="SilentHub", Size=18, Color=Color3.fromRGB(160, 32, 240), Font=2, ZIndex=1001, Visible=true})
 
-local wmSize = Library.Watermark.Txt.TextBounds
-Library.Watermark.Bg.Size = wmSize + Vector2.new(10, 4)
+-- Add a global flag or toggle switch support for the watermark
+Library.Flags["WatermarkToggle"] = true
 
 table.insert(Library.Connections, RunService.RenderStepped:Connect(function()
+    local showWm = Library.Flags["WatermarkToggle"] ~= false
+    if not showWm or not Library.Open then
+        Library.Watermark.Bg.Visible = false
+        Library.Watermark.Txt.Visible = false
+        return
+    end
+
     local vp = workspace.CurrentCamera.ViewportSize
+    local wmSize = Library.Watermark.Txt.TextBounds
+    Library.Watermark.Bg.Size = wmSize + Vector2.new(10, 4)
+
     local targetX = math.floor(vp.X - wmSize.X - 25)
     local targetY = 20
     local pos = Vector2.new(targetX, targetY)
@@ -995,7 +1005,7 @@ function Library:Window(options)
                 return El
             end
 
-            function Sub:Keybind(text, default, callback, mode, flag, tooltip)
+            function Sub:Keybind(text, default, callback, mode, flag, tooltip, showModeText)
                 local initialVal = default
                 if flag and Library.Flags[flag] ~= nil then
                     initialVal = Library.Flags[flag]
@@ -1004,6 +1014,7 @@ function Library:Window(options)
                 end
 
                 local initialMode = mode or "Toggle"
+                local showText = showModeText ~= false -- Defaults to true unless explicitly set to false
                 local El = {Class="Keybind", Value=initialVal, Binding=false, Mode=initialMode, Toggled=false, Flag=flag}
                 local Txt = Create("Text", {Text=text, Size=Library.Theme.TextSize, Font=Library.Theme.Font, ZIndex=7})
                 local BindBtn = Create("Square", {Filled=true, ZIndex=5})
@@ -1038,20 +1049,24 @@ function Library:Window(options)
                     BindTxt.Color = Library.Theme.TextDim; BindTxt.Transparency = alpha
                     BindTxt.Font = Library.Theme.Font
                     
-                    local modeStr = "[" .. El.Mode .. "]"
-                    ModeTxt.Visible = true
-                    ModeTxt.Text = modeStr
-                    ModeTxt.Position = btnPos - Vector2.new(ModeTxt.TextBounds.X + 10, -4)
-                    ModeTxt.Color = Library.Theme.Accent
-                    ModeTxt.Transparency = alpha
-                    ModeTxt.Font = Library.Theme.Font
+                    if showText then
+                        local modeStr = "[" .. El.Mode .. "]"
+                        ModeTxt.Visible = true
+                        ModeTxt.Text = modeStr
+                        ModeTxt.Position = btnPos - Vector2.new(ModeTxt.TextBounds.X + 10, -4)
+                        ModeTxt.Color = Library.Theme.Accent
+                        ModeTxt.Transparency = alpha
+                        ModeTxt.Font = Library.Theme.Font
+                    else
+                        ModeTxt.Visible = false
+                    end
 
                     if alpha > 0.9 and not popup and not dragging then
                         if IsMouseOver(btnPos, Vector2.new(btnW, 20)) and MouseClicked then
                             El.Binding = true
                             Win.KeybindToChange = El
                         end
-                        if IsMouseOver(ModeTxt.Position, ModeTxt.TextBounds) and MouseClicked then
+                        if showText and IsMouseOver(ModeTxt.Position, ModeTxt.TextBounds) and MouseClicked then
                             El.Mode = (El.Mode == "Toggle") and "Hold" or "Toggle"
                         end
                     end
