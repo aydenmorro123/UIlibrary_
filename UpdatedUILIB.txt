@@ -5,6 +5,9 @@ local RunService = game:GetService("RunService")
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 local Mouse = LocalPlayer:GetMouse()
+local TeleportService = game:GetService("TeleportService")
+local HttpService = game:GetService("HttpService")
+local Stats = game:GetService("Stats")
 
 if getgenv().SilentUI_Unload then
     pcall(getgenv().SilentUI_Unload)
@@ -28,8 +31,6 @@ Library.Theme = {
     Font        = 2, 
     TextSize    = 13
 }
-
---// HELPER FUNCTIONS //--
 
 local function Lerp(a, b, t) return a + (b - a) * t end
 
@@ -73,8 +74,6 @@ local function RGBtoHSV(color)
     return h, s, v
 end
 
---// CONFIG SYSTEM //--
-
 function Library:SaveConfig(filename)
     if not writefile then return false end
     local config = {}
@@ -88,7 +87,7 @@ function Library:SaveConfig(filename)
         end
     end
     local success, encoded = pcall(function()
-        return game:GetService("HttpService"):JSONEncode(config)
+        return HttpService:JSONEncode(config)
     end)
     if success then
         writefile((filename or "SilentHub_Config") .. ".json", encoded)
@@ -102,7 +101,7 @@ function Library:LoadConfig(filename)
     local file = (filename or "SilentHub_Config") .. ".json"
     if not isfile(file) then return false end
     local success, decoded = pcall(function()
-        return game:GetService("HttpService"):JSONDecode(readfile(file))
+        return HttpService:JSONDecode(readfile(file))
     end)
     if success and decoded then
         for flag, value in pairs(decoded) do
@@ -124,8 +123,6 @@ function Library:LoadConfig(filename)
     return false
 end
 
---// UNLOAD LOGIC //--
-
 local function UnloadUI()
     CAS:UnbindAction("SilentUI_ScrollSink")
     
@@ -144,7 +141,16 @@ local function UnloadUI()
 end
 getgenv().SilentUI_Unload = UnloadUI
 
---// WATERMARK //--
+function Library:Rejoin()
+    if #Players:GetPlayers() <= 1 then
+        LocalPlayer:Kick("\nRejoining...")
+        task.wait(1)
+        TeleportService:Teleport(game.PlaceId, LocalPlayer)
+    else
+        TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer)
+    end
+end
+
 Library.Watermark = {}
 
 local function CreateWatermark(type, props)
@@ -153,19 +159,79 @@ local function CreateWatermark(type, props)
     return drawing
 end
 
-Library.Watermark.Bg = CreateWatermark("Square", {Filled=true, Transparency=0.7, Color=Color3.new(0,0,0), ZIndex=1000, Visible=true})
-Library.Watermark.Txt = CreateWatermark("Text", {Text="SilentHub", Size=18, Color=Color3.fromRGB(160, 32, 240), Font=2, ZIndex=1001, Visible=true})
+Library.Watermark.Bg = CreateWatermark("Square", {Filled=true, Transparency=0.7, Color=Color3.new(0,0,0), ZIndex=1000, Visible=false})
+Library.Watermark.Txt = CreateWatermark("Text", {Text="", Size=18, Color=Color3.fromRGB(160, 32, 240), Font=2, ZIndex=1001, Visible=false})
 
--- Add a global flag or toggle switch support for the watermark
 Library.Flags["WatermarkToggle"] = true
+Library.Flags["Watermark_Time"] = true
+Library.Flags["Watermark_GameName"] = true
+Library.Flags["Watermark_PlayerCount"] = true
+Library.Flags["Watermark_Fps"] = true
+Library.Flags["Watermark_Ping"] = true
 
-table.insert(Library.Connections, RunService.RenderStepped:Connect(function()
+Library.Flags["Watermark_Color_Time"] = Color3.fromRGB(255, 255, 255)
+Library.Flags["Watermark_Color_GameName"] = Color3.fromRGB(255, 255, 255)
+Library.Flags["Watermark_Color_PlayerCount"] = Color3.fromRGB(255, 255, 255)
+Library.Flags["Watermark_Color_Fps"] = Color3.fromRGB(255, 255, 255)
+Library.Flags["Watermark_Color_Ping"] = Color3.fromRGB(255, 255, 255)
+Library.Flags["Watermark_Color_Main"] = Color3.fromRGB(160, 32, 240)
+
+local WatermarkAlpha = 0
+local LastFpsUpdate = 0
+local CachedFps = 0
+
+table.insert(Library.Connections, RunService.RenderStepped:Connect(function(dt)
     local showWm = Library.Flags["WatermarkToggle"] ~= false
-    if not showWm or not Library.Open then
+    local targetAlpha = (showWm and Library.Open) and 1 or 0
+    WatermarkAlpha = Lerp(WatermarkAlpha, targetAlpha, 15 * dt)
+
+    if WatermarkAlpha < 0.01 then
         Library.Watermark.Bg.Visible = false
         Library.Watermark.Txt.Visible = false
         return
     end
+
+    local now = tick()
+    if now - LastFpsUpdate > 0.5 then
+        CachedFps = math.floor(1 / dt)
+        LastFpsUpdate = now
+    end
+
+    local parts = {}
+    
+    if Library.Flags["Watermark_GameName"] ~= false then
+        local success, name = pcall(function() return MarketplaceService:GetProductInfo(game.PlaceId).Name end)
+        table.insert(parts, {Text = success and name or "Roblox", Flag = "Watermark_Color_GameName"})
+    end
+
+    if Library.Flags["Watermark_Fps"] ~= false then
+        table.insert(parts, {Text = CachedFps .. " fps", Flag = "Watermark_Color_Fps"})
+    end
+
+    if Library.Flags["Watermark_Ping"] ~= false then
+        local ping = 0
+        pcall(function()
+            ping = math.floor(LocalPlayer:GetNetworkPing() * 1000)
+        end)
+        table.insert(parts, {Text = ping .. "ms", Flag = "Watermark_Color_Ping"})
+    end
+
+    if Library.Flags["Watermark_PlayerCount"] ~= false then
+        table.insert(parts, {Text = #Players:GetPlayers() .. "/" .. Players.MaxPlayers, Flag = "Watermark_Color_PlayerCount"})
+    end
+
+    if Library.Flags["Watermark_Time"] ~= false then
+        table.insert(parts, {Text = os.date("%H:%M:%S"), Flag = "Watermark_Color_Time"})
+    end
+
+    local fullStr = table.concat(parts, " | ")
+    if #parts == 0 then
+        fullStr = "SilentHub"
+    end
+
+    Library.Watermark.Txt.Text = fullStr
+    Library.Watermark.Txt.Transparency = WatermarkAlpha
+    Library.Watermark.Txt.Font = Library.Theme.Font
 
     local vp = workspace.CurrentCamera.ViewportSize
     local wmSize = Library.Watermark.Txt.TextBounds
@@ -176,12 +242,11 @@ table.insert(Library.Connections, RunService.RenderStepped:Connect(function()
     local pos = Vector2.new(targetX, targetY)
 
     Library.Watermark.Bg.Position = pos
-    Library.Watermark.Txt.Position = pos + Vector2.new(5, 2)
+    Library.Watermark.Bg.Transparency = 0.7 * WatermarkAlpha
     Library.Watermark.Bg.Visible = true
     Library.Watermark.Txt.Visible = true
+    Library.Watermark.Txt.Position = pos + Vector2.new(5, 2)
 end))
-
---// NOTIFICATIONS //--
 
 Library.Notifications = {}
 
@@ -250,12 +315,12 @@ function Library:SetFont(fontId)
     Library.Theme.Font = fontId
 end
 
---// TOOLTIP SYSTEM //--
 local ActiveTooltip = {
     Text = nil,
     Txt = Create("Text", {Size=11, ZIndex=5000, Visible=false}),
     Bg = Create("Square", {Filled=true, ZIndex=4998, Visible=false}),
-    Out = Create("Square", {Filled=false, Thickness=1, ZIndex=4999, Visible=false})
+    Out = Create("Square", {Filled=false, Thickness=1, ZIndex=4999, Visible=false}),
+    Active = false
 }
 
 local function ShowTooltip(text)
@@ -263,8 +328,10 @@ local function ShowTooltip(text)
         ActiveTooltip.Txt.Visible = false
         ActiveTooltip.Bg.Visible = false
         ActiveTooltip.Out.Visible = false
+        ActiveTooltip.Active = false
         return 
     end
+    ActiveTooltip.Active = true
     local mPos = UIS:GetMouseLocation() + Vector2.new(15, 15)
     ActiveTooltip.Txt.Text = text
     ActiveTooltip.Txt.Font = Library.Theme.Font
@@ -283,8 +350,6 @@ local function ShowTooltip(text)
     ActiveTooltip.Out.Color = Library.Theme.Outline
     ActiveTooltip.Out.Visible = true
 end
-
---// MAIN WINDOW //--
 
 function Library:Window(options)
     options = options or {}
@@ -368,7 +433,6 @@ function Library:Window(options)
              UnloadUI()
         end
 
-        -- FIXED: Robust Keybind Binding & Cancellation with ESC
         if Win.KeybindToChange then
             if input.KeyCode == Enum.KeyCode.Escape then
                 Win.KeybindToChange.Binding = false
@@ -405,7 +469,6 @@ function Library:Window(options)
         end
     end))
 
-    -- FIXED: Clean and reliable character typing for TextBoxes
     table.insert(Library.Connections, UIS.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.Keyboard and Win.TextBoxFocused then
             local tb = Win.TextBoxFocused
@@ -452,6 +515,10 @@ function Library:Window(options)
     table.insert(Library.Connections, RunService.RenderStepped:Connect(function(dt)
         local targetAlpha = Library.Open and 1 or 0
         Library.Alpha = Lerp(Library.Alpha, targetAlpha, 15 * dt)
+
+        if ActiveTooltip.Active then
+            ShowTooltip(nil)
+        end
 
         if Library.Alpha < 0.01 then 
             for _, d in pairs(Library.Drawings) do d.Visible = false end
@@ -540,7 +607,6 @@ function Library:Window(options)
                     currentY = currentY + elHeight + 5
                 end
 
-                -- Scrollbar Interaction & Rendering
                 local visibleHeight = viewHeight
                 if sub.ContentHeight > visibleHeight then
                     local trackHeight = visibleHeight - 10
@@ -1014,7 +1080,7 @@ function Library:Window(options)
                 end
 
                 local initialMode = mode or "Toggle"
-                local showText = showModeText ~= false -- Defaults to true unless explicitly set to false
+                local showText = showModeText ~= false 
                 local El = {Class="Keybind", Value=initialVal, Binding=false, Mode=initialMode, Toggled=false, Flag=flag}
                 local Txt = Create("Text", {Text=text, Size=Library.Theme.TextSize, Font=Library.Theme.Font, ZIndex=7})
                 local BindBtn = Create("Square", {Filled=true, ZIndex=5})
@@ -1032,7 +1098,12 @@ function Library:Window(options)
                     Txt.Position = pos + Vector2.new(0, 4); Txt.Color = Library.Theme.Text; Txt.Transparency = alpha
                     Txt.Font = Library.Theme.Font
                     
-                    local btnW = 70
+                    local baseBtnW = 70
+                    local kName = El.Value and El.Value.Name or "None"
+                    BindTxt.Text = El.Binding and "..." or kName
+                    local textBoundsX = BindTxt.TextBounds.X
+                    local btnW = math.max(baseBtnW, textBoundsX + 15)
+                    
                     local btnPos = pos + Vector2.new(width - btnW, 0)
                     
                     BindBtn.Visible = true;
@@ -1042,9 +1113,7 @@ function Library:Window(options)
                     BindOut.Position = btnPos; BindOut.Size = Vector2.new(btnW, 20); BindOut.Color = El.Binding and Library.Theme.Accent or Library.Theme.Outline;
                     BindOut.Transparency = alpha
                     
-                    local kName = El.Value and El.Value.Name or "None"
                     BindTxt.Visible = true;
-                    BindTxt.Text = El.Binding and "..." or kName
                     BindTxt.Position = btnPos + Vector2.new(btnW/2, 3);
                     BindTxt.Color = Library.Theme.TextDim; BindTxt.Transparency = alpha
                     BindTxt.Font = Library.Theme.Font
@@ -1255,6 +1324,14 @@ function Library:Window(options)
                 local Out = Create("Square", {Thickness=1, Filled=false, ZIndex=6})
                 local Txt = Create("Text", {Text=text, Size=Library.Theme.TextSize, Font=Library.Theme.Font, Center=true, ZIndex=7})
 
+                local actualCallback = callback
+                if text:lower():find("rejoin") then
+                    actualCallback = function()
+                        if callback then pcall(callback) end
+                        Library:Rejoin()
+                    end
+                end
+
                 function El:GetHeight() return 30 end
                 function El:Hide() Box.Visible=false; Out.Visible=false; Txt.Visible=false end
                 function El:Render(pos, width, dt, alpha, popup, dragging)
@@ -1262,7 +1339,7 @@ function Library:Window(options)
                     local isHover = IsMouseOver(pos, size) and not popup
 
                     if isHover and MouseClicked and alpha > 0.9 and not dragging then
-                        task.spawn(callback)
+                        task.spawn(actualCallback)
                         El.Hover = 2 
                     end
 
