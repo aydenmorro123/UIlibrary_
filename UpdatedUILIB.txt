@@ -1,0 +1,1283 @@
+local Library = {}
+local UIS = game:GetService("UserInputService")
+local CAS = game:GetService("ContextActionService")
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local Mouse = LocalPlayer:GetMouse()
+
+if getgenv().SilentUI_Unload then
+    pcall(getgenv().SilentUI_Unload)
+end
+
+Library.Drawings = {}
+Library.Connections = {}
+Library.Flags = {}
+Library.Open = true
+Library.Alpha = 0
+Library.CurrentWindow = nil 
+
+Library.Theme = {
+    Main        = Color3.fromRGB(25, 25, 25),
+    Sidebar     = Color3.fromRGB(30, 30, 30),
+    ElementBg   = Color3.fromRGB(35, 35, 35),
+    Outline     = Color3.fromRGB(60, 60, 60),
+    Accent      = Color3.fromRGB(160, 32, 240),
+    Text        = Color3.fromRGB(255, 255, 255),
+    TextDim     = Color3.fromRGB(150, 150, 150),
+    Font        = 2, 
+    TextSize    = 13
+}
+
+--// HELPER FUNCTIONS //--
+
+local function Lerp(a, b, t) return a + (b - a) * t end
+
+local function LerpColor(c1, c2, t)
+    return Color3.new(Lerp(c1.R, c2.R, t), Lerp(c1.G, c2.G, t), Lerp(c1.B, c2.B, t))
+end
+
+local function Create(type, props)
+    local drawing = Drawing.new(type)
+    for k, v in pairs(props) do drawing[k] = v end
+    table.insert(Library.Drawings, drawing)
+    return drawing
+end
+
+local function IsMouseOver(pos, size)
+    local mPos = UIS:GetMouseLocation()
+    return mPos.X >= pos.X and mPos.X <= pos.X + size.X 
+       and mPos.Y >= pos.Y and mPos.Y <= pos.Y + size.Y
+end
+
+local function RGBtoHSV(color)
+    local r, g, b = color.R, color.G, color.B
+    local min, max = math.min(r, g, b), math.max(r, g, b)
+    local delta = max - min
+    local h, s, v
+    v = max
+    if delta == 0 then
+        h = 0
+        s = 0
+    else
+        s = delta / max
+        local dr = (((max - r) / 6) + (delta / 2)) / delta
+        local dg = (((max - g) / 6) + (delta / 2)) / delta
+        local db = (((max - b) / 6) + (delta / 2)) / delta
+        if r == max then h = db - dg
+        elseif g == max then h = (1 / 3) + dr - db
+        else h = (2 / 3) + dg - dr end
+        if h < 0 then h = h + 1 end
+        if h > 1 then h = h - 1 end
+    end
+    return h, s, v
+end
+
+--// CONFIG SYSTEM //--
+
+function Library:SaveConfig(filename)
+    if not writefile then return false end
+    local config = {}
+    for flag, value in pairs(Library.Flags) do
+        if typeof(value) == "Color3" then
+            config[flag] = {value.R, value.G, value.B}
+        elseif typeof(value) == "EnumItem" then
+            config[flag] = {value.EnumType.Name, value.Name}
+        else
+            config[flag] = value
+        end
+    end
+    local success, encoded = pcall(function()
+        return game:GetService("HttpService"):JSONEncode(config)
+    end)
+    if success then
+        writefile((filename or "SilentHub_Config") .. ".json", encoded)
+        return true
+    end
+    return false
+end
+
+function Library:LoadConfig(filename)
+    if not readfile or not isfile then return false end
+    local file = (filename or "SilentHub_Config") .. ".json"
+    if not isfile(file) then return false end
+    local success, decoded = pcall(function()
+        return game:GetService("HttpService"):JSONDecode(readfile(file))
+    end)
+    if success and decoded then
+        for flag, value in pairs(decoded) do
+            if Library.Flags[flag] ~= nil then
+                if typeof(Library.Flags[flag]) == "Color3" and type(value) == "table" then
+                    Library.Flags[flag] = Color3.new(value[1], value[2], value[3])
+                elseif typeof(Library.Flags[flag]) == "EnumItem" and type(value) == "table" then
+                    local enumType = Enum[value[1]]
+                    if enumType and enumType[value[2]] then
+                        Library.Flags[flag] = enumType[value[2]]
+                    end
+                else
+                    Library.Flags[flag] = value
+                end
+            end
+        end
+        return true
+    end
+    return false
+end
+
+--// UNLOAD LOGIC //--
+
+local function UnloadUI()
+    CAS:UnbindAction("SilentUI_ScrollSink")
+    
+    for _, c in pairs(Library.Connections) do c:Disconnect() end
+    for _, d in pairs(Library.Drawings) do d:Remove() end
+    
+    if Library.Watermark then
+        if Library.Watermark.Bg then Library.Watermark.Bg:Remove() end
+        if Library.Watermark.Txt then Library.Watermark.Txt:Remove() end
+    end
+
+    Library.Drawings = {}
+    Library.Connections = {}
+    Library.Flags = {}
+    getgenv().SilentUI_Unload = nil
+end
+getgenv().SilentUI_Unload = UnloadUI
+
+--// WATERMARK //--
+Library.Watermark = {}
+
+local function CreateWatermark(type, props)
+    local drawing = Drawing.new(type)
+    for k, v in pairs(props) do drawing[k] = v end
+    return drawing
+end
+
+Library.Watermark.Bg = CreateWatermark("Square", {Filled=true, Transparency=0.7, Color=Color3.new(0,0,0), ZIndex=1000, Visible=true})
+Library.Watermark.Txt = CreateWatermark("Text", {Text="SilentHub", Size=18, Color=Color3.fromRGB(160, 32, 240), Font=2, ZIndex=1001, Visible=true})
+
+local wmSize = Library.Watermark.Txt.TextBounds
+Library.Watermark.Bg.Size = wmSize + Vector2.new(10, 4)
+
+table.insert(Library.Connections, RunService.RenderStepped:Connect(function()
+    local vp = workspace.CurrentCamera.ViewportSize
+    local targetX = math.floor(vp.X - wmSize.X - 25)
+    local targetY = 20
+    local pos = Vector2.new(targetX, targetY)
+
+    Library.Watermark.Bg.Position = pos
+    Library.Watermark.Txt.Position = pos + Vector2.new(5, 2)
+    Library.Watermark.Bg.Visible = true
+    Library.Watermark.Txt.Visible = true
+end))
+
+--// NOTIFICATIONS //--
+
+Library.Notifications = {}
+
+function Library:Notify(text, duration)
+    local vp = workspace.CurrentCamera.ViewportSize
+    
+    local note = {
+        Text = text, 
+        Duration = duration or 3, 
+        SpawnTime = tick(),
+        Exiting = false,
+        X = vp.X, 
+        Drawings = {}
+    }
+    
+    note.Drawings.Txt = Create("Text", {Font=Library.Theme.Font, Size=13, ZIndex=202, Text=text, Visible=true})
+    note.Drawings.Box = Create("Square", {Filled=true, ZIndex=200, Visible=true})
+    note.Drawings.Out = Create("Square", {Filled=false, Thickness=1, ZIndex=201, Visible=true})
+
+    table.insert(Library.Notifications, note)
+end
+
+table.insert(Library.Connections, RunService.RenderStepped:Connect(function(dt)
+    local vp = workspace.CurrentCamera.ViewportSize
+    local noteCount = #Library.Notifications
+    local startY = (vp.Y / 2) - (noteCount * 34 / 2) 
+
+    for i = noteCount, 1, -1 do
+        local note = Library.Notifications[i]
+        
+        if tick() - note.SpawnTime > note.Duration then
+            note.Exiting = true
+        end
+
+        local width = note.Drawings.Txt.TextBounds.X + 20
+        local targetX = note.Exiting and (vp.X + 50) or (vp.X - width - 20)
+        
+        note.X = Lerp(note.X, targetX, 10 * dt)
+        
+        local yPos = startY + ((i - 1) * 34)
+        local pos = Vector2.new(note.X, yPos)
+        local size = Vector2.new(width, 24)
+
+        note.Drawings.Box.Position = pos
+        note.Drawings.Box.Size = size
+        note.Drawings.Box.Color = Library.Theme.Main
+
+        note.Drawings.Out.Position = pos
+        note.Drawings.Out.Size = size
+        note.Drawings.Out.Color = Library.Theme.Accent
+
+        note.Drawings.Txt.Position = pos + Vector2.new(10, 5)
+        note.Drawings.Txt.Color = Library.Theme.Text
+        note.Drawings.Txt.Font = Library.Theme.Font
+
+        if note.Exiting and math.abs(note.X - targetX) < 5 then
+            note.Drawings.Box:Remove()
+            note.Drawings.Out:Remove()
+            note.Drawings.Txt:Remove()
+            table.remove(Library.Notifications, i)
+        end
+    end
+end))
+
+function Library:SetFont(fontId)
+    Library.Theme.Font = fontId
+end
+
+--// TOOLTIP SYSTEM //--
+local ActiveTooltip = {
+    Text = nil,
+    Txt = Create("Text", {Size=11, ZIndex=5000, Visible=false}),
+    Bg = Create("Square", {Filled=true, ZIndex=4998, Visible=false}),
+    Out = Create("Square", {Filled=false, Thickness=1, ZIndex=4999, Visible=false})
+}
+
+local function ShowTooltip(text)
+    if not text then 
+        ActiveTooltip.Txt.Visible = false
+        ActiveTooltip.Bg.Visible = false
+        ActiveTooltip.Out.Visible = false
+        return 
+    end
+    local mPos = UIS:GetMouseLocation() + Vector2.new(15, 15)
+    ActiveTooltip.Txt.Text = text
+    ActiveTooltip.Txt.Font = Library.Theme.Font
+    ActiveTooltip.Txt.Color = Library.Theme.Text
+    ActiveTooltip.Txt.Position = mPos + Vector2.new(5, 3)
+    ActiveTooltip.Txt.Visible = true
+
+    local size = ActiveTooltip.Txt.TextBounds + Vector2.new(10, 6)
+    ActiveTooltip.Bg.Position = mPos
+    ActiveTooltip.Bg.Size = size
+    ActiveTooltip.Bg.Color = Library.Theme.Sidebar
+    ActiveTooltip.Bg.Visible = true
+
+    ActiveTooltip.Out.Position = mPos
+    ActiveTooltip.Out.Size = size
+    ActiveTooltip.Out.Color = Library.Theme.Outline
+    ActiveTooltip.Out.Visible = true
+end
+
+--// MAIN WINDOW //--
+
+function Library:Window(options)
+    options = options or {}
+    local Win = {
+        Title = options.Title or "SilentHub",
+        Size = options.Size or Vector2.new(600, 450),
+        Position = options.Position or Vector2.new(300, 300),
+        Tabs = {},
+        ActiveTab = nil,
+        Dragging = false,
+        DragOffset = Vector2.new(0,0),
+        OpenedPopup = nil,
+        KeybindToChange = nil,
+        TextBoxFocused = nil
+    }
+    Library.CurrentWindow = Win
+
+    local MouseClicked = false
+
+    CAS:BindActionAtPriority("SilentUI_ScrollSink", function(actionName, inputState, inputObj)
+        if Library.Open and Win then
+            if IsMouseOver(Win.Position, Win.Size) then
+                return Enum.ContextActionResult.Sink
+            end
+        end
+        return Enum.ContextActionResult.Pass
+    end, false, 3000, Enum.UserInputType.MouseWheel)
+
+    local MainOutline = Create("Square", {Thickness=1, Filled=false, ZIndex=1})
+    local MainBg = Create("Square", {Filled=true, ZIndex=0})
+    local SidebarBg = Create("Square", {Filled=true, ZIndex=1})
+    local SidebarOutline = Create("Square", {Thickness=1, Filled=false, ZIndex=1})
+    local TitleText = Create("Text", {Text=Win.Title, Size=16, Font=Library.Theme.Font, ZIndex=2, Center=false})
+    local TitleAccent = Create("Square", {Filled=true, ZIndex=2})
+
+    table.insert(Library.Connections, UIS.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseWheel and Library.Open and Win.ActiveTab and Win.ActiveTab.ActiveSubTab then
+            if IsMouseOver(Win.Position, Win.Size) and not Win.OpenedPopup then
+                local sub = Win.ActiveTab.ActiveSubTab
+                local visibleHeight = Win.Size.Y - 55 
+                
+                if sub.ContentHeight > visibleHeight then
+                    local scrollSpeed = 40
+                    sub.TargetScroll = sub.TargetScroll - (input.Position.Z * scrollSpeed)
+                    local maxScroll = math.max(0, sub.ContentHeight - visibleHeight + 10)
+                    sub.TargetScroll = math.clamp(sub.TargetScroll, 0, maxScroll)
+                end
+            end
+        end
+    end))
+
+    table.insert(Library.Connections, UIS.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            MouseClicked = true
+            
+            if Library.Open and IsMouseOver(Win.Position, Vector2.new(140, 40)) and not Win.OpenedPopup then
+                Win.Dragging = true
+                Win.DragOffset = UIS:GetMouseLocation() - Win.Position
+            end
+
+            if Win.OpenedPopup then
+                local pObj = Win.OpenedPopup
+                local pBounds = pObj.PopupBounds or Vector2.new(0,0)
+                local pSize = pObj.PopupSize or Vector2.new(0,0)
+                local bPos = pObj.ButtonPos or Vector2.new(0,0)
+                local bSize = pObj.ButtonSize or Vector2.new(0,0)
+
+                if not IsMouseOver(pBounds, pSize) and not IsMouseOver(bPos, bSize) then
+                    pObj:Close()
+                end
+            end
+
+            if Win.TextBoxFocused then
+                Win.TextBoxFocused.Focused = false
+                Win.TextBoxFocused = nil
+            end
+
+        elseif input.KeyCode == Enum.KeyCode.RightControl then 
+            Library.Open = not Library.Open
+        elseif input.KeyCode == Enum.KeyCode.End then
+             UnloadUI()
+        end
+
+        if Win.TextBoxFocused and input.UserInputType == Enum.UserInputType.Keyboard then
+            local tb = Win.TextBoxFocused
+            if input.KeyCode == Enum.KeyCode.BackSpace then
+                if #tb.Value > 0 then
+                    tb.Value = tb.Value:sub(1, #tb.Value - 1)
+                    if tb.Callback then tb.Callback(tb.Value) end
+                end
+            elseif input.KeyCode == Enum.KeyCode.Return or input.KeyCode == Enum.KeyCode.Escape then
+                tb.Focused = false
+                Win.TextBoxFocused = nil
+            end
+            return
+        end
+
+        if Win.KeybindToChange and input.KeyCode ~= Enum.KeyCode.Unknown then
+            local kb = Win.KeybindToChange
+            if input.UserInputType == Enum.UserInputType.Keyboard then
+                kb.Value = input.KeyCode
+                if kb.Flag then Library.Flags[kb.Flag] = kb.Value end
+                kb.Binding = false
+                Win.KeybindToChange = nil
+                Library:Notify("Keybind set to " .. tostring(input.KeyCode.Name))
+            end
+        end
+
+        if not Win.KeybindToChange then
+            for _, tab in pairs(Win.Tabs) do
+                for _, sub in pairs(tab.SubTabs) do
+                    for _, el in pairs(sub.Elements) do
+                        if el.Class == "Keybind" and el.Value == input.KeyCode then
+                            if el.Mode == "Toggle" then
+                                el.Toggled = not el.Toggled
+                                el.Callback(el.Toggled)
+                            elseif el.Mode == "Hold" then
+                                el.Toggled = true
+                                el.Callback(true)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end))
+
+    table.insert(Library.Connections, UIS.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Keyboard and Win.TextBoxFocused then
+            local tb = Win.TextBoxFocused
+            local char = input.KeyCode.Name
+            if #char == 1 then
+                if UIS:IsKeyDown(Enum.KeyCode.LeftShift) or UIS:IsKeyDown(Enum.KeyCode.RightShift) then
+                    tb.Value = tb.Value .. char:upper()
+                else
+                    tb.Value = tb.Value .. char:lower()
+                end
+                if tb.Callback then tb.Callback(tb.Value) end
+            elseif input.KeyCode == Enum.KeyCode.Space then
+                tb.Value = tb.Value .. " "
+                if tb.Callback then tb.Callback(tb.Value) end
+            end
+        end
+    end))
+
+    table.insert(Library.Connections, UIS.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then Win.Dragging = false end
+        
+        if not Win.KeybindToChange and input.UserInputType == Enum.UserInputType.Keyboard then
+            for _, tab in pairs(Win.Tabs) do
+                for _, sub in pairs(tab.SubTabs) do
+                    for _, el in pairs(sub.Elements) do
+                        if el.Class == "Keybind" and el.Value == input.KeyCode and el.Mode == "Hold" then
+                            el.Toggled = false
+                            el.Callback(false)
+                        end
+                    end
+                end
+            end
+        end
+    end))
+
+    table.insert(Library.Connections, RunService.RenderStepped:Connect(function(dt)
+        local targetAlpha = Library.Open and 1 or 0
+        Library.Alpha = Lerp(Library.Alpha, targetAlpha, 15 * dt)
+
+        if Library.Alpha < 0.01 then 
+            for _, d in pairs(Library.Drawings) do d.Visible = false end
+            ShowTooltip(nil)
+            MouseClicked = false
+            return 
+        end
+
+        if Win.Dragging then
+            local targetPos = UIS:GetMouseLocation() - Win.DragOffset
+            Win.Position = Vector2.new(Lerp(Win.Position.X, targetPos.X, 20*dt), Lerp(Win.Position.Y, targetPos.Y, 20*dt))
+        end
+
+        local p, s, a = Win.Position, Win.Size, Library.Alpha
+
+        MainBg.Visible = true;
+        MainBg.Position = p; MainBg.Size = s; MainBg.Color = Library.Theme.Main; MainBg.Transparency = a
+        MainOutline.Visible = true;
+        MainOutline.Position = p; MainOutline.Size = s; MainOutline.Color = Library.Theme.Outline; MainOutline.Transparency = a
+
+        local sbW = 140
+        SidebarBg.Visible = true;
+        SidebarBg.Position = p; SidebarBg.Size = Vector2.new(sbW, s.Y); SidebarBg.Color = Library.Theme.Sidebar;
+        SidebarBg.Transparency = a
+        SidebarOutline.Visible = true; SidebarOutline.Position = p; SidebarOutline.Size = Vector2.new(sbW, s.Y);
+        SidebarOutline.Color = Library.Theme.Outline; SidebarOutline.Transparency = a
+
+        TitleText.Visible = true;
+        TitleText.Position = p + Vector2.new(15, 12); 
+        TitleText.Color = Library.Theme.Accent; 
+        TitleText.Transparency = a
+        TitleText.Font = Library.Theme.Font
+        
+        TitleAccent.Visible = true;
+        TitleAccent.Position = p + Vector2.new(0, 40); TitleAccent.Size = Vector2.new(sbW, 1); TitleAccent.Color = Library.Theme.Accent;
+        TitleAccent.Transparency = a
+
+        local tabY = 50
+        for _, tab in ipairs(Win.Tabs) do
+            tab:Render(p + Vector2.new(0, tabY), sbW, dt, a)
+            tabY = tabY + 30
+        end
+
+        if Win.ActiveTab then
+            local startX = p.X + sbW + 15
+            local topY = p.Y + 12
+            local currentX = startX
+
+            if Win.ActiveTab.SubTabs then
+                for _, sub in ipairs(Win.ActiveTab.SubTabs) do
+                    sub:RenderHeader(Vector2.new(currentX, topY), dt, a)
+                    currentX = currentX + sub.Width + 15
+                end
+            end
+
+            if Win.ActiveTab.ActiveSubTab then
+                local sub = Win.ActiveTab.ActiveSubTab
+                
+                local totalHeight = 0
+                for _, el in ipairs(sub.Elements) do
+                    totalHeight = totalHeight + el:GetHeight() + 5
+                end
+                sub.ContentHeight = totalHeight
+
+                sub.ScrollY = Lerp(sub.ScrollY, sub.TargetScroll, 15 * dt)
+
+                local viewX = startX
+                local viewY = p.Y + 45
+                local viewWidth = s.X - sbW - 30
+                local viewHeight = s.Y - 55
+                local clipTop = viewY
+                local clipBottom = viewY + viewHeight
+
+                local currentY = viewY - sub.ScrollY
+
+                local hoveringAnyElement = false
+                for _, el in ipairs(sub.Elements) do
+                    local elHeight = el:GetHeight()
+                    local elPos = Vector2.new(viewX, currentY)
+                    
+                    if (currentY >= clipTop - 5) and (currentY + elHeight <= clipBottom + 5) then
+                        el:Render(elPos, viewWidth, dt, a, Win.OpenedPopup, Win.Dragging)
+                    else
+                        el:Hide()
+                    end
+                    
+                    currentY = currentY + elHeight + 5
+                end
+
+                -- Scrollbar Interaction & Rendering
+                local visibleHeight = viewHeight
+                if sub.ContentHeight > visibleHeight then
+                    local trackHeight = visibleHeight - 10
+                    local handleHeight = math.max(20, (visibleHeight / sub.ContentHeight) * trackHeight)
+                    local maxScroll = sub.ContentHeight - visibleHeight
+                    local scrollPct = maxScroll > 0 and (sub.TargetScroll / maxScroll) or 0
+                    local handleY = viewY + 5 + scrollPct * (trackHeight - handleHeight)
+                    local trackX = p.X + s.X - 8
+                    local trackPos = Vector2.new(trackX, viewY + 5)
+                    local handlePos = Vector2.new(trackX, handleY)
+                    local handleSize = Vector2.new(4, handleHeight)
+
+                    sub.ScrollDrawings = sub.ScrollDrawings or {
+                        Track = Create("Square", {Filled=true, ZIndex=100}),
+                        Handle = Create("Square", {Filled=true, ZIndex=101})
+                    }
+
+                    sub.ScrollDrawings.Track.Visible = true
+                    sub.ScrollDrawings.Track.Position = trackPos
+                    sub.ScrollDrawings.Track.Size = Vector2.new(4, trackHeight)
+                    sub.ScrollDrawings.Track.Color = Library.Theme.Outline
+                    sub.ScrollDrawings.Track.Transparency = a * 0.5
+
+                    sub.ScrollDrawings.Handle.Visible = true
+                    sub.ScrollDrawings.Handle.Position = handlePos
+                    sub.ScrollDrawings.Handle.Size = handleSize
+                    sub.ScrollDrawings.Handle.Color = Library.Theme.Accent
+                    sub.ScrollDrawings.Handle.Transparency = a
+
+                    if IsMouseOver(trackPos, Vector2.new(4, trackHeight)) and MouseClicked and not Win.OpenedPopup then
+                        local mY = UIS:GetMouseLocation().Y
+                        local relY = math.clamp(mY - trackPos.Y, 0, trackHeight)
+                        local newPct = relY / trackHeight
+                        sub.TargetScroll = newPct * maxScroll
+                    end
+                else
+                    if sub.ScrollDrawings then
+                        sub.ScrollDrawings.Track.Visible = false
+                        sub.ScrollDrawings.Handle.Visible = false
+                    end
+                end
+            end
+        end
+        
+        MouseClicked = false
+    end))
+
+    function Win:Tab(name)
+        local Tab = {Name = name, SubTabs = {}, ActiveSubTab = nil}
+        Tab.Btn = Create("Square", {Filled=true, ZIndex=2})
+        Tab.Txt = Create("Text", {Text=name, Size=Library.Theme.TextSize, Font=Library.Theme.Font, ZIndex=3})
+        Tab.HoverAlpha = 0
+
+        function Tab:Render(pos, width, dt, alpha)
+            local isActive = (Win.ActiveTab == Tab)
+            local isHover = IsMouseOver(pos, Vector2.new(width, 28)) and not Win.OpenedPopup
+
+            if isHover and MouseClicked and Library.Alpha > 0.9 and not Win.Dragging then
+                if Win.ActiveTab ~= Tab then
+                    if Win.ActiveTab and Win.ActiveTab.ActiveSubTab then
+                        for _, e in pairs(Win.ActiveTab.ActiveSubTab.Elements) do
+                            if e.Hide then e:Hide() end
+                        end
+                    end
+                    if Win.ActiveTab and Win.ActiveTab.SubTabs then
+                        for _, sub in pairs(Win.ActiveTab.SubTabs) do
+                            sub.Txt.Visible = false
+                            sub.Line.Visible = false
+                            if sub.ScrollDrawings then
+                                sub.ScrollDrawings.Track.Visible = false
+                                sub.ScrollDrawings.Handle.Visible = false
+                            end
+                        end
+                    end
+                    if Win.OpenedPopup then Win.OpenedPopup:Close() end
+                    Win.ActiveTab = Tab
+                end
+            end
+
+            Tab.HoverAlpha = Lerp(Tab.HoverAlpha, (isActive or isHover) and 1 or 0, 10 * dt)
+
+            Tab.Btn.Visible = true
+            Tab.Btn.Position = pos
+            Tab.Btn.Size = Vector2.new(width, 28)
+            Tab.Btn.Color = Library.Theme.ElementBg
+            Tab.Btn.Transparency = alpha * (Tab.HoverAlpha * 0.2)
+
+            Tab.Txt.Visible = true
+            Tab.Txt.Position = pos + Vector2.new(15, 6)
+            Tab.Txt.Color = LerpColor(Library.Theme.TextDim, Library.Theme.Text, Tab.HoverAlpha)
+            Tab.Txt.Transparency = alpha
+            Tab.Txt.Font = Library.Theme.Font
+        end
+
+        function Tab:SubTab(subName)
+            local Sub = {Name = subName, Elements = {}, Width = 0, ScrollY = 0, TargetScroll = 0, ContentHeight = 0}
+            Sub.Txt = Create("Text", {Text=subName, Size=Library.Theme.TextSize, Font=Library.Theme.Font, ZIndex=3})
+            Sub.Line = Create("Square", {Filled=true, ZIndex=3})
+            Sub.Width = Sub.Txt.TextBounds.X
+
+            function Sub:RenderHeader(pos, dt, alpha)
+                local isActive = (Tab.ActiveSubTab == Sub)
+                local isHover = IsMouseOver(pos, Vector2.new(Sub.Width, 20)) and not Win.OpenedPopup
+
+                if isHover and MouseClicked and Library.Alpha > 0.9 and not Win.Dragging then
+                    if Tab.ActiveSubTab ~= Sub then
+                        if Tab.ActiveSubTab then
+                            for _, e in pairs(Tab.ActiveSubTab.Elements) do
+                                if e.Hide then e:Hide() end
+                            end
+                            if Tab.ActiveSubTab.ScrollDrawings then
+                                Tab.ActiveSubTab.ScrollDrawings.Track.Visible = false
+                                Tab.ActiveSubTab.ScrollDrawings.Handle.Visible = false
+                            end
+                        end
+                        if Win.OpenedPopup then Win.OpenedPopup:Close() end
+                        Tab.ActiveSubTab = Sub
+                    end
+                end
+
+                Sub.Txt.Visible = true
+                Sub.Txt.Position = pos
+                Sub.Txt.Color = isActive and Library.Theme.Accent or (isHover and Library.Theme.Text or Library.Theme.TextDim)
+                Sub.Txt.Transparency = alpha
+                Sub.Txt.Font = Library.Theme.Font
+
+                Sub.Line.Visible = isActive
+                Sub.Line.Position = pos + Vector2.new(0, 15)
+                Sub.Line.Size = Vector2.new(Sub.Width, 2)
+                Sub.Line.Color = Library.Theme.Accent
+                Sub.Line.Transparency = alpha
+            end
+
+            function Sub:Section(text)
+                local El = {Class="Section"}
+                local Txt = Create("Text", {Text=text, Size=Library.Theme.TextSize, Font=Library.Theme.Font, ZIndex=5})
+                local Line = Create("Square", {Filled=true, ZIndex=5})
+                function El:GetHeight() return 22 end
+                function El:Hide() Txt.Visible = false; Line.Visible = false end
+                function El:Render(pos, width, dt, alpha, popup, dragging)
+                    Txt.Visible = true
+                    Txt.Position = pos + Vector2.new(0, 2)
+                    Txt.Color = Library.Theme.Accent
+                    Txt.Transparency = alpha
+                    Txt.Font = Library.Theme.Font
+
+                    Line.Visible = true
+                    Line.Position = pos + Vector2.new(Txt.TextBounds.X + 10, 10)
+                    Line.Size = Vector2.new(width - Txt.TextBounds.X - 10, 1)
+                    Line.Color = Library.Theme.Outline
+                    Line.Transparency = alpha
+                end
+                table.insert(Sub.Elements, El)
+                return El
+            end
+
+            function Sub:Label(text, tooltip)
+                local El = {Class="Label"}
+                local Txt = Create("Text", {Text=text, Size=Library.Theme.TextSize, Font=Library.Theme.Font, ZIndex=5})
+                function El:GetHeight() return 18 end
+                function El:Hide() Txt.Visible = false end
+                function El:Render(pos, width, dt, alpha, popup, dragging)
+                    Txt.Visible = true;
+                    Txt.Position = pos;
+                    Txt.Color = Library.Theme.Text; Txt.Transparency = alpha
+                    Txt.Font = Library.Theme.Font
+                    if tooltip and IsMouseOver(pos, Vector2.new(width, 18)) and not popup then
+                        ShowTooltip(tooltip)
+                    end
+                end
+                table.insert(Sub.Elements, El)
+                return El
+            end
+
+            function Sub:Toggle(text, default, callback, flag, tooltip)
+                local initialVal = default or false
+                if flag and Library.Flags[flag] ~= nil then
+                    initialVal = Library.Flags[flag]
+                elseif flag then
+                    Library.Flags[flag] = initialVal
+                end
+
+                local El = {Class="Toggle", State=initialVal, Anim=initialVal and 1 or 0, Flag=flag}
+                local Box = Create("Square", {Filled=true, ZIndex=5})
+                local Out = Create("Square", {Thickness=1, Filled=false, ZIndex=6})
+                local Fill = Create("Square", {Filled=true, ZIndex=6})
+                local Txt = Create("Text", {Text=text, Size=Library.Theme.TextSize, Font=Library.Theme.Font, ZIndex=7})
+
+                if initialVal and callback then callback(initialVal) end
+
+                function El:GetHeight() return 24 end
+                function El:Hide() Box.Visible=false; Out.Visible=false; Fill.Visible=false; Txt.Visible=false end
+                function El:Render(pos, width, dt, alpha, popup, dragging)
+                    local size = Vector2.new(width, 24)
+                    local isHover = IsMouseOver(pos, size) and not popup
+
+                    if isHover and MouseClicked and alpha > 0.9 and not dragging then
+                        El.State = not El.State
+                        if flag then Library.Flags[flag] = El.State end
+                        if callback then callback(El.State) end
+                    end
+
+                    if isHover and tooltip then ShowTooltip(tooltip) end
+
+                    El.Anim = Lerp(El.Anim, El.State and 1 or 0, 15*dt)
+                    Txt.Visible = true;
+                    Txt.Position = pos + Vector2.new(0, 5); Txt.Color = Library.Theme.Text; Txt.Transparency = alpha
+                    Txt.Font = Library.Theme.Font
+                    local boxS = 14
+                    local boxP = pos + Vector2.new(width - boxS - 2, 5)
+                    Box.Visible = true; Box.Position = boxP; Box.Size = Vector2.new(boxS, boxS); Box.Color = Library.Theme.ElementBg;
+                    Box.Transparency = alpha
+                    Out.Visible = true;
+                    Out.Position = boxP; Out.Size = Vector2.new(boxS, boxS); Out.Color = Library.Theme.Outline;
+                    Out.Transparency = alpha
+                    local fillS = 10 * El.Anim
+                    local offset = (14 - fillS)/2
+                    Fill.Visible = true;
+                    Fill.Position = boxP + Vector2.new(offset, offset); Fill.Size = Vector2.new(fillS, fillS); Fill.Color = Library.Theme.Accent;
+                    Fill.Transparency = alpha
+                end
+                table.insert(Sub.Elements, El)
+                return El
+            end
+
+            function Sub:Slider(text, min, max, default, callback, flag, tooltip)
+                local initialVal = default or min
+                if flag and Library.Flags[flag] ~= nil then
+                    initialVal = Library.Flags[flag]
+                elseif flag then
+                    Library.Flags[flag] = initialVal
+                end
+
+                local El = {Class="Slider", Value=initialVal, Dragging=false, Flag=flag}
+                local Txt = Create("Text", {Text=text, Size=Library.Theme.TextSize, Font=Library.Theme.Font, ZIndex=7})
+                local Val = Create("Text", {Text=tostring(initialVal), Size=Library.Theme.TextSize, Font=Library.Theme.Font, ZIndex=7})
+                local Bg = Create("Square", {Filled=true, ZIndex=5})
+                local Fill = Create("Square", {Filled=true, ZIndex=6})
+                local Out = Create("Square", {Thickness=1, Filled=false, ZIndex=7})
+
+                if callback then callback(El.Value) end
+
+                function El:GetHeight() return 35 end
+                function El:Hide() Txt.Visible=false; Val.Visible=false; Bg.Visible=false; Fill.Visible=false; Out.Visible=false end
+                function El:Render(pos, width, dt, alpha, popup, dragging)
+                    local sH = 6 
+                    local sY = pos.Y + 22
+                    local sliderBounds = Vector2.new(width, sH + 4)
+
+                    if El.Dragging then
+                        if not UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
+                            El.Dragging = false
+                        else
+                            local pct = math.clamp((UIS:GetMouseLocation().X - pos.X) / width, 0, 1)
+                            local newVal = math.floor(min + (max - min) * pct + 0.5)
+                            if newVal ~= El.Value then
+                                El.Value = newVal
+                                if flag then Library.Flags[flag] = El.Value end
+                                if callback then callback(El.Value) end
+                            end
+                        end
+                    elseif IsMouseOver(Vector2.new(pos.X, sY-2), sliderBounds) and MouseClicked and not popup and alpha > 0.9 and not dragging then
+                        El.Dragging = true
+                    end
+
+                    if IsMouseOver(Vector2.new(pos.X, sY-2), sliderBounds) and tooltip then ShowTooltip(tooltip) end
+
+                    local pct = (El.Value - min) / (max - min)
+                    Txt.Visible = true;
+                    Txt.Position = pos; Txt.Color = Library.Theme.Text; Txt.Transparency = alpha
+                    Txt.Font = Library.Theme.Font
+                    Val.Visible = true;
+                    Val.Position = pos + Vector2.new(width - Val.TextBounds.X, 0); Val.Text = tostring(El.Value); Val.Color = Library.Theme.TextDim;
+                    Val.Transparency = alpha
+                    Val.Font = Library.Theme.Font
+                    Bg.Visible = true;
+                    Bg.Position = Vector2.new(pos.X, sY); Bg.Size = Vector2.new(width, sH); Bg.Color = Library.Theme.ElementBg;
+                    Bg.Transparency = alpha
+                    Out.Visible = true;
+                    Out.Position = Bg.Position; Out.Size = Bg.Size; Out.Color = Library.Theme.Outline; Out.Transparency = alpha
+                    Fill.Visible = true;
+                    Fill.Position = Bg.Position; Fill.Size = Vector2.new(width * pct, sH); Fill.Color = Library.Theme.Accent;
+                    Fill.Transparency = alpha
+                end
+                table.insert(Sub.Elements, El)
+                return El
+            end
+
+            function Sub:Dropdown(text, options, default, callback, flag, tooltip)
+                local initialVal = default or options[1]
+                if flag and Library.Flags[flag] ~= nil then
+                    initialVal = Library.Flags[flag]
+                elseif flag then
+                    Library.Flags[flag] = initialVal
+                end
+
+                local El = {Class="Dropdown", Selected=initialVal, Open=false, HeightAnim=0, Flag=flag}
+                local Txt = Create("Text", {Text=text, Size=Library.Theme.TextSize, Font=Library.Theme.Font, ZIndex=7})
+                local Box = Create("Square", {Filled=true, ZIndex=5})
+                local Out = Create("Square", {Thickness=1, Filled=false, ZIndex=6})
+                local SelTxt = Create("Text", {Text=tostring(initialVal), Size=Library.Theme.TextSize, Font=Library.Theme.Font, ZIndex=7})
+                local ListBg = Create("Square", {Filled=true, ZIndex=50, Visible=false})
+                local ListOut = Create("Square", {Thickness=1, Filled=false, ZIndex=51, Visible=false})
+                local ListItems = {}
+                
+                El.ButtonPos = Vector2.new(0,0)
+                El.ButtonSize = Vector2.new(0,0)
+                El.PopupBounds = Vector2.new(0,0)
+                El.PopupSize = Vector2.new(0,0)
+
+                function El:Close() El.Open = false; Win.OpenedPopup = nil end
+                function El:GetHeight() return 45 end
+                function El:Hide() 
+                    Txt.Visible=false; Box.Visible=false; Out.Visible=false; SelTxt.Visible=false; 
+                    ListBg.Visible=false; ListOut.Visible=false
+                    for _,v in pairs(ListItems) do v.Box.Visible=false; v.Txt.Visible=false end
+                end
+
+                function El:Render(pos, width, dt, alpha, popup, dragging)
+                    local boxY = pos.Y + 18
+                    local boxH = 22
+
+                    El.ButtonPos = Vector2.new(pos.X, boxY)
+                    El.ButtonSize = Vector2.new(width, boxH)
+
+                    Txt.Visible = true;
+                    Txt.Position = pos; Txt.Color = Library.Theme.Text; Txt.Transparency = alpha
+                    Txt.Font = Library.Theme.Font
+                    Box.Visible = true;
+                    Box.Position = El.ButtonPos; Box.Size = El.ButtonSize; Box.Color = Library.Theme.ElementBg; Box.Transparency = alpha
+                    Out.Visible = true;
+                    Out.Position = Box.Position; Out.Size = Box.Size; Out.Color = El.Open and Library.Theme.Accent or Library.Theme.Outline;
+                    Out.Transparency = alpha
+                    SelTxt.Visible = true;
+                    SelTxt.Position = Box.Position + Vector2.new(5, 4); SelTxt.Text = tostring(El.Selected); SelTxt.Color = Library.Theme.TextDim;
+                    SelTxt.Transparency = alpha
+                    SelTxt.Font = Library.Theme.Font
+
+                    if IsMouseOver(Box.Position, Box.Size) and MouseClicked and alpha > 0.9 and not dragging then
+                        if not popup or popup == El then
+                            El.Open = not El.Open
+                            Win.OpenedPopup = El.Open and El or nil
+                        end
+                    end
+
+                    if IsMouseOver(Box.Position, Box.Size) and tooltip then ShowTooltip(tooltip) end
+
+                    local listH = #options * 22
+                    El.HeightAnim = Lerp(El.HeightAnim, El.Open and 1 or 0, 20*dt)
+                    local curH = listH * El.HeightAnim
+
+                    if curH > 1 and El.Open then
+                        ListBg.Visible = true;
+                        ListBg.Position = Vector2.new(pos.X, boxY + boxH + 2); 
+                        ListBg.Size = Vector2.new(width, curH); ListBg.Color = Library.Theme.Sidebar;
+                        ListBg.Transparency = alpha
+                        ListOut.Visible = true;
+                        ListOut.Position = ListBg.Position; ListOut.Size = ListBg.Size; ListOut.Color = Library.Theme.Outline; ListOut.Transparency = alpha
+                        
+                        El.PopupBounds = ListBg.Position
+                        El.PopupSize = ListBg.Size
+
+                        while #ListItems < #options do
+                            table.insert(ListItems, { Box=Create("Square", {Filled=true, ZIndex=52}), Txt=Create("Text", {ZIndex=53, Size=Library.Theme.TextSize, Font=Library.Theme.Font}) })
+                        end
+
+                        local yOff = 0
+                        for i, opt in ipairs(options) do
+                            local item = ListItems[i]
+                            local iPos = ListBg.Position + Vector2.new(0, yOff)
+                            local iSize = Vector2.new(width, 22)
+                            item.Box.Visible = true;
+                            item.Box.Position = iPos; item.Box.Size = iSize; item.Box.Transparency = alpha
+                            item.Txt.Visible = true;
+                            item.Txt.Position = iPos + Vector2.new(5, 4); item.Txt.Text = tostring(opt); item.Txt.Transparency = alpha
+                            item.Txt.Font = Library.Theme.Font
+
+                            if IsMouseOver(iPos, iSize) then
+                                item.Box.Color = Library.Theme.Accent
+                                item.Txt.Color = Color3.new(0,0,0)
+                                if MouseClicked and alpha > 0.9 then
+                                    El.Selected = opt
+                                    if flag then Library.Flags[flag] = El.Selected end
+                                    if callback then callback(opt) end
+                                    El:Close()
+                                end
+                            else
+                                item.Box.Color = Library.Theme.Sidebar
+                                item.Txt.Color = Library.Theme.Text
+                            end
+                            yOff = yOff + 22
+                        end
+                    else
+                        ListBg.Visible = false;
+                        ListOut.Visible = false
+                        for _,v in pairs(ListItems) do v.Box.Visible=false; v.Txt.Visible=false end
+                    end
+                end
+                table.insert(Sub.Elements, El)
+                return El
+            end
+
+            function Sub:TextBox(text, default, callback, placeholder, tooltip)
+                local initialVal = default or ""
+                local El = {Class="TextBox", Value=initialVal, Focused=false, Placeholder = placeholder or "Type here..."}
+                local Txt = Create("Text", {Text=text, Size=Library.Theme.TextSize, Font=Library.Theme.Font, ZIndex=7})
+                local Box = Create("Square", {Filled=true, ZIndex=5})
+                local Out = Create("Square", {Thickness=1, Filled=false, ZIndex=6})
+                local ValTxt = Create("Text", {Text=initialVal, Size=Library.Theme.TextSize, Font=Library.Theme.Font, ZIndex=7})
+
+                function El:GetHeight() return 45 end
+                function El:Hide() Txt.Visible=false; Box.Visible=false; Out.Visible=false; ValTxt.Visible=false end
+
+                function El:Render(pos, width, dt, alpha, popup, dragging)
+                    local boxY = pos.Y + 18
+                    local boxH = 22
+                    local boxPos = Vector2.new(pos.X, boxY)
+                    local boxSize = Vector2.new(width, boxH)
+
+                    Txt.Visible = true
+                    Txt.Position = pos
+                    Txt.Color = Library.Theme.Text
+                    Txt.Transparency = alpha
+                    Txt.Font = Library.Theme.Font
+
+                    Box.Visible = true
+                    Box.Position = boxPos
+                    Box.Size = boxSize
+                    Box.Color = Library.Theme.ElementBg
+                    Box.Transparency = alpha
+
+                    Out.Visible = true
+                    Out.Position = boxPos
+                    Out.Size = boxSize
+                    Out.Color = El.Focused and Library.Theme.Accent or Library.Theme.Outline
+                    Out.Transparency = alpha
+
+                    ValTxt.Visible = true
+                    ValTxt.Position = boxPos + Vector2.new(5, 4)
+                    if #El.Value == 0 and not El.Focused then
+                        ValTxt.Text = El.Placeholder
+                        ValTxt.Color = Library.Theme.TextDim
+                    else
+                        ValTxt.Text = El.Value .. (El.Focused and "_" or "")
+                        ValTxt.Color = Library.Theme.Text
+                    end
+                    ValTxt.Transparency = alpha
+                    ValTxt.Font = Library.Theme.Font
+
+                    if IsMouseOver(boxPos, boxSize) and MouseClicked and alpha > 0.9 and not dragging then
+                        if Win.TextBoxFocused and Win.TextBoxFocused ~= El then
+                            Win.TextBoxFocused.Focused = false
+                        end
+                        El.Focused = true
+                        Win.TextBoxFocused = El
+                        if Win.OpenedPopup then Win.OpenedPopup:Close() end
+                    end
+
+                    if IsMouseOver(boxPos, boxSize) and tooltip then ShowTooltip(tooltip) end
+                end
+                table.insert(Sub.Elements, El)
+                return El
+            end
+
+            function Sub:Keybind(text, default, callback, mode, flag, tooltip)
+                local initialVal = default
+                if flag and Library.Flags[flag] ~= nil then
+                    initialVal = Library.Flags[flag]
+                elseif flag then
+                    Library.Flags[flag] = initialVal
+                end
+
+                local initialMode = mode or "Toggle"
+                local El = {Class="Keybind", Value=initialVal, Binding=false, Mode=initialMode, Toggled=false, Flag=flag}
+                local Txt = Create("Text", {Text=text, Size=Library.Theme.TextSize, Font=Library.Theme.Font, ZIndex=7})
+                local BindBtn = Create("Square", {Filled=true, ZIndex=5})
+                local BindOut = Create("Square", {Thickness=1, Filled=false, ZIndex=6})
+                local BindTxt = Create("Text", {Text="NONE", Size=Library.Theme.TextSize, Font=Library.Theme.Font, ZIndex=7, Center=true})
+                local ModeTxt = Create("Text", {Text="[" .. initialMode .. "]", Size=11, Font=Library.Theme.Font, ZIndex=7, Center=false})
+                
+                El.Callback = callback or function() end
+
+                function El:GetHeight() return 25 end
+                function El:Hide() Txt.Visible=false; BindBtn.Visible=false; BindOut.Visible=false; BindTxt.Visible=false; ModeTxt.Visible=false end
+
+                function El:Render(pos, width, dt, alpha, popup, dragging)
+                    Txt.Visible = true;
+                    Txt.Position = pos + Vector2.new(0, 4); Txt.Color = Library.Theme.Text; Txt.Transparency = alpha
+                    Txt.Font = Library.Theme.Font
+                    
+                    local btnW = 70
+                    local btnPos = pos + Vector2.new(width - btnW, 0)
+                    
+                    BindBtn.Visible = true;
+                    BindBtn.Position = btnPos; BindBtn.Size = Vector2.new(btnW, 20); BindBtn.Color = Library.Theme.ElementBg;
+                    BindBtn.Transparency = alpha
+                    BindOut.Visible = true;
+                    BindOut.Position = btnPos; BindOut.Size = Vector2.new(btnW, 20); BindOut.Color = El.Binding and Library.Theme.Accent or Library.Theme.Outline;
+                    BindOut.Transparency = alpha
+                    
+                    local kName = El.Value and El.Value.Name or "None"
+                    BindTxt.Visible = true;
+                    BindTxt.Text = El.Binding and "..." or kName
+                    BindTxt.Position = btnPos + Vector2.new(btnW/2, 3);
+                    BindTxt.Color = Library.Theme.TextDim; BindTxt.Transparency = alpha
+                    BindTxt.Font = Library.Theme.Font
+                    
+                    local modeStr = "[" .. El.Mode .. "]"
+                    ModeTxt.Visible = true
+                    ModeTxt.Text = modeStr
+                    ModeTxt.Position = btnPos - Vector2.new(ModeTxt.TextBounds.X + 10, -4)
+                    ModeTxt.Color = Library.Theme.Accent
+                    ModeTxt.Transparency = alpha
+                    ModeTxt.Font = Library.Theme.Font
+
+                    if alpha > 0.9 and not popup and not dragging then
+                        if IsMouseOver(btnPos, Vector2.new(btnW, 20)) and MouseClicked then
+                            El.Binding = true
+                            Win.KeybindToChange = El
+                        end
+                        if IsMouseOver(ModeTxt.Position, ModeTxt.TextBounds) and MouseClicked then
+                            El.Mode = (El.Mode == "Toggle") and "Hold" or "Toggle"
+                        end
+                    end
+
+                    if IsMouseOver(pos, Vector2.new(width, 20)) and tooltip then ShowTooltip(tooltip) end
+                end
+                table.insert(Sub.Elements, El)
+                return El
+            end
+
+            function Sub:ColorPicker(text, default, callback, flag, tooltip)
+                local initialColor = default or Color3.new(1,1,1)
+                if flag and Library.Flags[flag] ~= nil then
+                    initialColor = Library.Flags[flag]
+                elseif flag then
+                    Library.Flags[flag] = initialColor
+                end
+
+                local h, s, v = RGBtoHSV(initialColor)
+                local El = {Class="ColorPicker", Color=initialColor, H=h, S=s, V=v, Open=false, HeightAnim=0, Flag=flag}
+                local Txt = Create("Text", {Text=text, Size=Library.Theme.TextSize, Font=Library.Theme.Font, ZIndex=7})
+                local Box = Create("Square", {Filled=true, ZIndex=5})
+                local Out = Create("Square", {Thickness=1, Filled=false, ZIndex=6})
+                
+                local PickerBg = Create("Square", {Filled=true, ZIndex=50, Visible=false})
+                local PickerOut = Create("Square", {Thickness=1, Filled=false, ZIndex=51, Visible=false})
+                
+                El.SatGrid = {}
+                local GridResX = 14
+                local GridResY = 10
+                
+                for x=0, GridResX-1 do
+                    for y=0, GridResY-1 do
+                        local sq = Create("Square", {Filled=true, ZIndex=52, Visible=false})
+                        table.insert(El.SatGrid, {Obj=sq, X=x, Y=y})
+                    end
+                end
+                
+                local SatCursor = Create("Square", {Filled=true, ZIndex=54, Visible=false, Size=Vector2.new(4,4)})
+                local SatCursorOut = Create("Square", {Filled=false, Thickness=1, ZIndex=55, Visible=false, Size=Vector2.new(6,6), Color=Color3.new(0,0,0)})
+                
+                El.HueSegments = {}
+                local HueSegCount = 140
+                for i=1, HueSegCount do
+                     table.insert(El.HueSegments, Create("Square", {Filled=true, ZIndex=52, Visible=false}))
+                end
+                
+                local HueCursor = Create("Square", {Filled=true, ZIndex=54, Visible=false, Size=Vector2.new(2, 15)})
+                local HueCursorOut = Create("Square", {Filled=false, Thickness=1, ZIndex=55, Visible=false, Size=Vector2.new(4, 17), Color=Color3.new(0,0,0)})
+
+                El.ButtonPos = Vector2.new(0,0)
+                El.ButtonSize = Vector2.new(0,0)
+                El.PopupBounds = Vector2.new(0,0)
+                El.PopupSize = Vector2.new(0,0)
+
+                if callback then callback(El.Color) end
+
+                function El:Close() El.Open = false; Win.OpenedPopup = nil end
+                function El:GetHeight() return 24 end
+                function El:Hide()
+                    Txt.Visible=false; Box.Visible=false; Out.Visible=false;
+                    PickerBg.Visible=false; PickerOut.Visible=false;
+                    SatCursor.Visible=false; SatCursorOut.Visible=false; 
+                    HueCursor.Visible=false; HueCursorOut.Visible=false
+                    for _, seg in pairs(El.HueSegments) do seg.Visible = false end
+                    for _, grid in pairs(El.SatGrid) do grid.Obj.Visible = false end
+                end
+
+                function El:Render(pos, width, dt, alpha, popup, dragging)
+                    Txt.Visible = true;
+                    Txt.Position = pos + Vector2.new(0,4); Txt.Color = Library.Theme.Text; Txt.Transparency = alpha
+                    Txt.Font = Library.Theme.Font
+                    
+                    local boxS = 16
+                    local boxP = pos + Vector2.new(width - boxS, 4)
+                    El.ButtonPos = boxP
+                    El.ButtonSize = Vector2.new(boxS, boxS)
+
+                    Box.Visible = true;
+                    Box.Position = boxP; Box.Size = Vector2.new(boxS, boxS); Box.Color = El.Color;
+                    Box.Transparency = alpha
+                    Out.Visible = true;
+                    Out.Position = boxP; Out.Size = Vector2.new(boxS, boxS); Out.Color = Library.Theme.Outline;
+                    Out.Transparency = alpha
+
+                    if IsMouseOver(boxP, Vector2.new(boxS, boxS)) and MouseClicked and alpha > 0.9 and not dragging then
+                        if not popup or popup == El then
+                            El.Open = not El.Open
+                            Win.OpenedPopup = El.Open and El or nil
+                        end
+                    end
+
+                    if IsMouseOver(pos, Vector2.new(width, 20)) and tooltip then ShowTooltip(tooltip) end
+
+                    El.HeightAnim = Lerp(El.HeightAnim, El.Open and 1 or 0, 20*dt)
+                    local pickerH = 150
+                    local curH = pickerH * El.HeightAnim
+                    
+                    if curH > 5 and El.Open then
+                        local pX = pos.X + width - 160 
+                        local pY = boxP.Y + boxS + 4
+                        
+                        PickerBg.Visible = true; PickerBg.Position = Vector2.new(pX, pY); PickerBg.Size = Vector2.new(160, curH);
+                        PickerBg.Color = Library.Theme.Sidebar; PickerBg.Transparency = alpha
+                        PickerOut.Visible = true;
+                        PickerOut.Position = PickerBg.Position; PickerOut.Size = PickerBg.Size; PickerOut.Color = Library.Theme.Outline; PickerOut.Transparency = alpha
+                        
+                        El.PopupBounds = PickerBg.Position
+                        El.PopupSize = PickerBg.Size
+
+                        local satSize = Vector2.new(140, 100)
+                        local satPos = PickerBg.Position + Vector2.new(10, 10)
+                        
+                        local cellW = satSize.X / GridResX
+                        local cellH = satSize.Y / GridResY
+                        
+                        for _, cell in ipairs(El.SatGrid) do
+                            cell.Obj.Visible = true
+                            cell.Obj.Position = satPos + Vector2.new(cell.X * cellW, cell.Y * cellH)
+                            cell.Obj.Size = Vector2.new(cellW+1, cellH+1)
+                            cell.Obj.Transparency = alpha
+                            
+                            local sGrid = cell.X / (GridResX - 1)
+                            local vGrid = 1 - (cell.Y / (GridResY - 1))
+                            cell.Obj.Color = Color3.fromHSV(El.H, sGrid, vGrid)
+                        end
+                        
+                        if UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) and IsMouseOver(satPos, satSize) then
+                            local mPos = UIS:GetMouseLocation()
+                            El.S = math.clamp((mPos.X - satPos.X) / satSize.X, 0, 1)
+                            El.V = 1 - math.clamp((mPos.Y - satPos.Y) / satSize.Y, 0, 1)
+                            El.Color = Color3.fromHSV(El.H, El.S, El.V)
+                            if flag then Library.Flags[flag] = El.Color end
+                            if callback then callback(El.Color) end
+                        end
+                        
+                        local satCursorPos = satPos + Vector2.new(El.S * satSize.X - 2, (1-El.V) * satSize.Y - 2)
+                        SatCursor.Visible = true;
+                        SatCursor.Position = satCursorPos; SatCursor.Color = Color3.new(1,1,1); SatCursor.Transparency = alpha
+                        SatCursorOut.Visible = true;
+                        SatCursorOut.Position = satCursorPos - Vector2.new(1,1); SatCursorOut.Transparency = alpha
+
+                        local hueSize = Vector2.new(140, 15)
+                        local huePos = satPos + Vector2.new(0, satSize.Y + 10)
+                        
+                        local segW = hueSize.X / HueSegCount
+                        for i = 1, HueSegCount do
+                            local seg = El.HueSegments[i]
+                            seg.Visible = true
+                            seg.Position = huePos + Vector2.new((i-1) * segW, 0)
+                            seg.Size = Vector2.new(segW + 1, hueSize.Y)
+                            
+                            local hVal = (i-1) / HueSegCount
+                            seg.Color = Color3.fromHSV(hVal, 1, 1) 
+                            seg.Transparency = alpha
+                        end
+
+                        if UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) and IsMouseOver(huePos, hueSize) then
+                            local mPos = UIS:GetMouseLocation()
+                            El.H = math.clamp((mPos.X - huePos.X) / hueSize.X, 0, 1)
+                            El.Color = Color3.fromHSV(El.H, El.S, El.V)
+                            if flag then Library.Flags[flag] = El.Color end
+                            if callback then callback(El.Color) end
+                        end
+                        
+                        local hueCursorPos = huePos + Vector2.new(El.H * hueSize.X - 1, 0)
+                        HueCursor.Visible = true;
+                        HueCursor.Position = hueCursorPos; HueCursor.Color = Color3.new(1,1,1); HueCursor.Transparency = alpha
+                        HueCursorOut.Visible = true;
+                        HueCursorOut.Position = hueCursorPos - Vector2.new(1,1); HueCursorOut.Transparency = alpha
+                    else
+                        PickerBg.Visible=false; PickerOut.Visible=false; 
+                        SatCursor.Visible=false; SatCursorOut.Visible=false
+                        HueCursor.Visible=false; HueCursorOut.Visible=false
+                        for _, seg in pairs(El.HueSegments) do seg.Visible = false end
+                        for _, grid in pairs(El.SatGrid) do grid.Obj.Visible = false end
+                    end
+                end
+                table.insert(Sub.Elements, El)
+                return El
+            end
+
+            function Sub:Button(text, callback, tooltip)
+                local El = {Class="Button", Hover=0}
+                local Box = Create("Square", {Filled=true, ZIndex=5})
+                local Out = Create("Square", {Thickness=1, Filled=false, ZIndex=6})
+                local Txt = Create("Text", {Text=text, Size=Library.Theme.TextSize, Font=Library.Theme.Font, Center=true, ZIndex=7})
+
+                function El:GetHeight() return 30 end
+                function El:Hide() Box.Visible=false; Out.Visible=false; Txt.Visible=false end
+                function El:Render(pos, width, dt, alpha, popup, dragging)
+                    local size = Vector2.new(width, 28)
+                    local isHover = IsMouseOver(pos, size) and not popup
+
+                    if isHover and MouseClicked and alpha > 0.9 and not dragging then
+                        task.spawn(callback)
+                        El.Hover = 2 
+                    end
+
+                    if isHover and tooltip then ShowTooltip(tooltip) end
+
+                    El.Hover = Lerp(El.Hover, isHover and 1 or 0, 10*dt)
+                    Box.Visible = true;
+                    Box.Position = pos; Box.Size = size
+                    Box.Color = LerpColor(Library.Theme.ElementBg, Library.Theme.Outline, El.Hover/2)
+                    Box.Transparency = alpha
+                    Out.Visible = true;
+                    Out.Position = pos; Out.Size = size; Out.Color = Library.Theme.Outline; Out.Transparency = alpha
+                    Txt.Visible = true;
+                    Txt.Position = pos + Vector2.new(size.X/2, 7); Txt.Color = Library.Theme.Text; Txt.Transparency = alpha
+                    Txt.Font = Library.Theme.Font
+                end
+                table.insert(Sub.Elements, El)
+                return El
+            end
+            
+            table.insert(Tab.SubTabs, Sub)
+            if #Tab.SubTabs == 1 then Tab.ActiveSubTab = Sub end
+            return Sub
+        end
+
+        table.insert(Win.Tabs, Tab)
+        if #Win.Tabs == 1 then Win.ActiveTab = Tab end
+        return Tab
+    end
+
+    return Win
+end
+
+return Library
