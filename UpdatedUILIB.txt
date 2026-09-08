@@ -358,28 +358,21 @@ function Library:Window(options)
              UnloadUI()
         end
 
-        if Win.TextBoxFocused and input.UserInputType == Enum.UserInputType.Keyboard then
-            local tb = Win.TextBoxFocused
-            if input.KeyCode == Enum.KeyCode.BackSpace then
-                if #tb.Value > 0 then
-                    tb.Value = tb.Value:sub(1, #tb.Value - 1)
-                    if tb.Callback then tb.Callback(tb.Value) end
-                end
-            elseif input.KeyCode == Enum.KeyCode.Return or input.KeyCode == Enum.KeyCode.Escape then
-                tb.Focused = false
-                Win.TextBoxFocused = nil
-            end
-            return
-        end
-
-        if Win.KeybindToChange and input.KeyCode ~= Enum.KeyCode.Unknown then
-            local kb = Win.KeybindToChange
-            if input.UserInputType == Enum.UserInputType.Keyboard then
+        -- FIXED: Robust Keybind Binding & Cancellation with ESC
+        if Win.KeybindToChange then
+            if input.KeyCode == Enum.KeyCode.Escape then
+                Win.KeybindToChange.Binding = false
+                Win.KeybindToChange = nil
+                Library:Notify("Keybind binding cancelled")
+                return
+            elseif input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode ~= Enum.KeyCode.Unknown then
+                local kb = Win.KeybindToChange
                 kb.Value = input.KeyCode
                 if kb.Flag then Library.Flags[kb.Flag] = kb.Value end
                 kb.Binding = false
                 Win.KeybindToChange = nil
                 Library:Notify("Keybind set to " .. tostring(input.KeyCode.Name))
+                return
             end
         end
 
@@ -402,20 +395,29 @@ function Library:Window(options)
         end
     end))
 
+    -- FIXED: Clean and reliable character typing for TextBoxes
     table.insert(Library.Connections, UIS.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.Keyboard and Win.TextBoxFocused then
             local tb = Win.TextBoxFocused
-            local char = input.KeyCode.Name
-            if #char == 1 then
-                if UIS:IsKeyDown(Enum.KeyCode.LeftShift) or UIS:IsKeyDown(Enum.KeyCode.RightShift) then
-                    tb.Value = tb.Value .. char:upper()
-                else
-                    tb.Value = tb.Value .. char:lower()
+            if input.KeyCode == Enum.KeyCode.BackSpace then
+                if #tb.Value > 0 then
+                    tb.Value = tb.Value:sub(1, #tb.Value - 1)
+                    if tb.Callback then tb.Callback(tb.Value) end
                 end
-                if tb.Callback then tb.Callback(tb.Value) end
-            elseif input.KeyCode == Enum.KeyCode.Space then
-                tb.Value = tb.Value .. " "
-                if tb.Callback then tb.Callback(tb.Value) end
+            elseif input.KeyCode == Enum.KeyCode.Return or input.KeyCode == Enum.KeyCode.Escape then
+                tb.Focused = false
+                Win.TextBoxFocused = nil
+            else
+                local char = input.KeyCode.Name
+                local shift = UIS:IsKeyDown(Enum.KeyCode.LeftShift) or UIS:IsKeyDown(Enum.KeyCode.RightShift)
+                
+                if #char == 1 then
+                    tb.Value = tb.Value .. (shift and char:upper() or char:lower())
+                    if tb.Callback then tb.Callback(tb.Value) end
+                elseif input.KeyCode == Enum.KeyCode.Space then
+                    tb.Value = tb.Value .. " "
+                    if tb.Callback then tb.Callback(tb.Value) end
+                end
             end
         end
     end))
@@ -515,7 +517,6 @@ function Library:Window(options)
 
                 local currentY = viewY - sub.ScrollY
 
-                local hoveringAnyElement = false
                 for _, el in ipairs(sub.Elements) do
                     local elHeight = el:GetHeight()
                     local elPos = Vector2.new(viewX, currentY)
