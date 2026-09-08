@@ -228,13 +228,13 @@ table.insert(Library.Connections, RunService.RenderStepped:Connect(function(dt)
 	for i, v in ipairs(parts) do
 		if type(v) == "string" or type(v) == "number" then
 			table.insert(cleanParts, v)
-		elseif type(v) == "table" then
+		elseif type(v) == "table" and v.Text then
 			-- Handle nested tables if necessary, e.g., recursive concat or string conversion
-			table.insert(cleanParts, tostring(v)) 
+			table.insert(cleanParts, tostring(v.Text))
 		end
 	end
 
-    local fullStr = table.concat(parts, " | ")
+    local fullStr = table.concat(cleanParts, " | ")
     if #parts == 0 then
         fullStr = "SilentHub"
     end
