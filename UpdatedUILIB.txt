@@ -198,7 +198,19 @@ table.insert(Library.Connections, RunService.RenderStepped:Connect(function(dt)
     -- Watermark visibility is now independent of Library.Open state
     local targetAlpha = showWm and 1 or 0
     WatermarkAlpha = Lerp(WatermarkAlpha, targetAlpha, 15 * dt)
-
+	
+		local function isWatermarkElementSelected(name)
+		local selected = Library.Flags["WatermarkElements_Dropdown"]
+		if type(selected) == "table" then
+			for _, v in ipairs(selected) do
+				if v == name then
+					return true
+				end
+			end
+		end
+		return false
+	end
+	
     if WatermarkAlpha < 0.01 then
         Library.Watermark.Bg.Visible = false
         Library.Watermark.Txt.Visible = false
@@ -213,15 +225,15 @@ table.insert(Library.Connections, RunService.RenderStepped:Connect(function(dt)
 
     local parts = {}
     
-    if Library.Flags["Watermark_GameName"] ~= false then
+    if isWatermarkElementSelected("GameName") then
         table.insert(parts, {Text = CachedGameName, Flag = "Watermark_Color_GameName"})
     end
 
-    if Library.Flags["Watermark_Fps"] ~= false then
+    if isWatermarkElementSelected("Fps") then
         table.insert(parts, {Text = CachedFps .. " fps", Flag = "Watermark_Color_Fps"})
     end
 
-    if Library.Flags["Watermark_Ping"] ~= false then
+    if isWatermarkElementSelected("Ping") then
         local ping = 0
         pcall(function()
             ping = math.floor(LocalPlayer:GetNetworkPing() * 1000)
@@ -229,11 +241,11 @@ table.insert(Library.Connections, RunService.RenderStepped:Connect(function(dt)
         table.insert(parts, {Text = ping .. "ms", Flag = "Watermark_Color_Ping"})
     end
 
-    if Library.Flags["Watermark_PlayerCount"] ~= false then
+    if isWatermarkElementSelected("PlayerCount") then
         table.insert(parts, {Text = #Players:GetPlayers() .. "/" .. Players.MaxPlayers, Flag = "Watermark_PlayerCount"})
     end
 
-    if Library.Flags["Watermark_Time"] ~= false then
+    if isWatermarkElementSelected("Time") then
         table.insert(parts, {Text = os.date("%H:%M:%S"), Flag = "Watermark_Color_Time"})
     end
 
