@@ -8,6 +8,7 @@ local Mouse = LocalPlayer:GetMouse()
 local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
 local Stats = game:GetService("Stats")
+local MarketplaceService = game:GetService("MarketplaceService")
 
 if getgenv().SilentUI_Unload then
     pcall(getgenv().SilentUI_Unload)
@@ -162,12 +163,13 @@ end
 Library.Watermark.Bg = CreateWatermark("Square", {Filled=true, Transparency=0.7, Color=Color3.new(0,0,0), ZIndex=1000, Visible=false})
 Library.Watermark.Txt = CreateWatermark("Text", {Text="", Size=18, Color=Color3.fromRGB(160, 32, 240), Font=2, ZIndex=1001, Visible=false})
 
+-- Watermark default elements set to false on execution as requested
 Library.Flags["WatermarkToggle"] = true
-Library.Flags["Watermark_Time"] = true
-Library.Flags["Watermark_GameName"] = true
-Library.Flags["Watermark_PlayerCount"] = true
-Library.Flags["Watermark_Fps"] = true
-Library.Flags["Watermark_Ping"] = true
+Library.Flags["Watermark_Time"] = false
+Library.Flags["Watermark_GameName"] = false
+Library.Flags["Watermark_PlayerCount"] = false
+Library.Flags["Watermark_Fps"] = false
+Library.Flags["Watermark_Ping"] = false
 
 Library.Flags["Watermark_Color_Time"] = Color3.fromRGB(255, 255, 255)
 Library.Flags["Watermark_Color_GameName"] = Color3.fromRGB(255, 255, 255)
@@ -179,10 +181,22 @@ Library.Flags["Watermark_Color_Main"] = Color3.fromRGB(160, 32, 240)
 local WatermarkAlpha = 0
 local LastFpsUpdate = 0
 local CachedFps = 0
+local CachedGameName = "Roblox"
+
+-- Fetch real game name safely using MarketplaceService outside render loop to prevent lag spikes
+task.spawn(function()
+    pcall(function()
+        local info = MarketplaceService:GetProductInfo(game.PlaceId)
+        if info and info.Name then
+            CachedGameName = info.Name
+        end
+    end)
+end)
 
 table.insert(Library.Connections, RunService.RenderStepped:Connect(function(dt)
     local showWm = Library.Flags["WatermarkToggle"] ~= false
-    local targetAlpha = (showWm and Library.Open) and 1 or 0
+    -- Watermark visibility is now independent of Library.Open state
+    local targetAlpha = showWm and 1 or 0
     WatermarkAlpha = Lerp(WatermarkAlpha, targetAlpha, 15 * dt)
 
     if WatermarkAlpha < 0.01 then
@@ -200,8 +214,7 @@ table.insert(Library.Connections, RunService.RenderStepped:Connect(function(dt)
     local parts = {}
     
     if Library.Flags["Watermark_GameName"] ~= false then
-        local success, name = pcall(function() return MarketplaceService:GetProductInfo(game.PlaceId).Name end)
-        table.insert(parts, {Text = success and name or "Roblox", Flag = "Watermark_Color_GameName"})
+        table.insert(parts, {Text = CachedGameName, Flag = "Watermark_Color_GameName"})
     end
 
     if Library.Flags["Watermark_Fps"] ~= false then
@@ -217,23 +230,22 @@ table.insert(Library.Connections, RunService.RenderStepped:Connect(function(dt)
     end
 
     if Library.Flags["Watermark_PlayerCount"] ~= false then
-        table.insert(parts, {Text = #Players:GetPlayers() .. "/" .. Players.MaxPlayers, Flag = "Watermark_Color_PlayerCount"})
+        table.insert(parts, {Text = #Players:GetPlayers() .. "/" .. Players.MaxPlayers, Flag = "Watermark_PlayerCount"})
     end
 
     if Library.Flags["Watermark_Time"] ~= false then
         table.insert(parts, {Text = os.date("%H:%M:%S"), Flag = "Watermark_Color_Time"})
     end
 
-	local cleanParts = {}
-	for i, v in ipairs(parts) do
-		if type(v) == "string" or type(v) == "number" then
-			table.insert(cleanParts, v)
-		elseif type(v) == "table" and v.Text then
-			table.insert(cleanParts, tostring(v.Text)) 
-		end
-	end
+    local cleanParts = {}
+    for i, v in ipairs(parts) do
+        if type(v) == "string" or type(v) == "number" then
+            table.insert(cleanParts, v)
+        elseif type(v) == "table" and v.Text then
+            table.insert(cleanParts, tostring(v.Text)) 
+        end
+    end
 
-    -- Concatenate the cleaned array instead of the raw parts array
     local fullStr = table.concat(cleanParts, " | ")
     if #cleanParts == 0 then
         fullStr = "SilentHub"
@@ -362,11 +374,12 @@ local function ShowTooltip(text)
 end
 
 function Library:Window(options)
-    options = options or {}
+    options = options.ToggleKey and options or (options or {})
     local Win = {
         Title = options.Title or "SilentHub",
         Size = options.Size or Vector2.new(600, 450),
         Position = options.Position or Vector2.new(300, 300),
+        ToggleKey = options.ToggleKey or Enum.KeyCode.RightControl, -- Custom toggle key supported
         Tabs = {},
         ActiveTab = nil,
         Dragging = false,
@@ -437,7 +450,7 @@ function Library:Window(options)
                 Win.TextBoxFocused = nil
             end
 
-        elseif input.KeyCode == Enum.KeyCode.RightControl then 
+        elseif input.KeyCode == Win.ToggleKey then 
             Library.Open = not Library.Open
         elseif input.KeyCode == Enum.KeyCode.End then
              UnloadUI()
@@ -1006,6 +1019,149 @@ function Library:Window(options)
                             else
                                 item.Box.Color = Library.Theme.Sidebar
                                 item.Txt.Color = Library.Theme.Text
+                            end
+                            yOff = yOff + 22
+                        end
+                    else
+                        ListBg.Visible = false;
+                        ListOut.Visible = false
+                        for _,v in pairs(ListItems) do v.Box.Visible=false; v.Txt.Visible=false end
+                    end
+                end
+                table.insert(Sub.Elements, El)
+                return El
+            end
+
+            function Sub:MultiDropdown(text, options, default, callback, flag, tooltip)
+                local initialVal = default or {}
+                if flag and Library.Flags[flag] ~= nil then
+                    initialVal = Library.Flags[flag]
+                elseif flag then
+                    Library.Flags[flag] = initialVal
+                end
+
+                local SelectedMap = {}
+                for _, v in ipairs(initialVal) do
+                    SelectedMap[v] = true
+                end
+
+                local El = {Class="MultiDropdown", SelectedMap=SelectedMap, Open=false, HeightAnim=0, Flag=flag}
+                local Txt = Create("Text", {Text=text, Size=Library.Theme.TextSize, Font=Library.Theme.Font, ZIndex=7})
+                local Box = Create("Square", {Filled=true, ZIndex=5})
+                local Out = Create("Square", {Thickness=1, Filled=false, ZIndex=6})
+                local SelTxt = Create("Text", {Text="", Size=Library.Theme.TextSize, Font=Library.Theme.Font, ZIndex=7})
+                local ListBg = Create("Square", {Filled=true, ZIndex=50, Visible=false})
+                local ListOut = Create("Square", {Thickness=1, Filled=false, ZIndex=51, Visible=false})
+                local ListItems = {}
+                
+                El.ButtonPos = Vector2.new(0,0)
+                El.ButtonSize = Vector2.new(0,0)
+                El.PopupBounds = Vector2.new(0,0)
+                El.PopupSize = Vector2.new(0,0)
+
+                local function GetSelectedList()
+                    local list = {}
+                    for _, opt in ipairs(options) do
+                        if El.SelectedMap[opt] then
+                            table.insert(list, opt)
+                        end
+                    end
+                    return list
+                end
+
+                local function UpdateDisplayString()
+                    local sel = GetSelectedList()
+                    if #sel == 0 then
+                        SelTxt.Text = "None"
+                    else
+                        SelTxt.Text = table.concat(sel, ", ")
+                    end
+                end
+
+                UpdateDisplayString()
+
+                function El:Close() El.Open = false; Win.OpenedPopup = nil end
+                function El:GetHeight() return 45 end
+                function El:Hide() 
+                    Txt.Visible=false; Box.Visible=false; Out.Visible=false; SelTxt.Visible=false; 
+                    ListBg.Visible=false; ListOut.Visible=false
+                    for _,v in pairs(ListItems) do v.Box.Visible=false; v.Txt.Visible=false end
+                end
+
+                function El:Render(pos, width, dt, alpha, popup, dragging)
+                    local boxY = pos.Y + 18
+                    local boxH = 22
+
+                    El.ButtonPos = Vector2.new(pos.X, boxY)
+                    El.ButtonSize = Vector2.new(width, boxH)
+
+                    Txt.Visible = true;
+                    Txt.Position = pos; Txt.Color = Library.Theme.Text; Txt.Transparency = alpha
+                    Txt.Font = Library.Theme.Font
+                    Box.Visible = true;
+                    Box.Position = El.ButtonPos; Box.Size = El.ButtonSize; Box.Color = Library.Theme.ElementBg; Box.Transparency = alpha
+                    Out.Visible = true;
+                    Out.Position = Box.Position; Out.Size = Box.Size; Out.Color = El.Open and Library.Theme.Accent or Library.Theme.Outline;
+                    Out.Transparency = alpha
+                    SelTxt.Visible = true;
+                    SelTxt.Position = Box.Position + Vector2.new(5, 4); SelTxt.Color = Library.Theme.TextDim;
+                    SelTxt.Transparency = alpha
+                    SelTxt.Font = Library.Theme.Font
+
+                    if IsMouseOver(Box.Position, Box.Size) and MouseClicked and alpha > 0.9 and not dragging then
+                        if not popup or popup == El then
+                            El.Open = not El.Open
+                            Win.OpenedPopup = El.Open and El or nil
+                        end
+                    end
+
+                    if IsMouseOver(Box.Position, Box.Size) and tooltip then ShowTooltip(tooltip) end
+
+                    local listH = #options * 22
+                    El.HeightAnim = Lerp(El.HeightAnim, El.Open and 1 or 0, 20*dt)
+                    local curH = listH * El.HeightAnim
+
+                    if curH > 1 and El.Open then
+                        ListBg.Visible = true;
+                        ListBg.Position = Vector2.new(pos.X, boxY + boxH + 2); 
+                        ListBg.Size = Vector2.new(width, curH); ListBg.Color = Library.Theme.Sidebar;
+                        ListBg.Transparency = alpha
+                        ListOut.Visible = true;
+                        ListOut.Position = ListBg.Position; ListOut.Size = ListBg.Size; ListOut.Color = Library.Theme.Outline; ListOut.Transparency = alpha
+                        
+                        El.PopupBounds = ListBg.Position
+                        El.PopupSize = ListBg.Size
+
+                        while #ListItems < #options do
+                            table.insert(ListItems, { Box=Create("Square", {Filled=true, ZIndex=52}), Txt=Create("Text", {ZIndex=53, Size=Library.Theme.TextSize, Font=Library.Theme.Font}) })
+                        end
+
+                        local yOff = 0
+                        for i, opt in ipairs(options) do
+                            local item = ListItems[i]
+                            local iPos = ListBg.Position + Vector2.new(0, yOff)
+                            local iSize = Vector2.new(width, 22)
+                            item.Box.Visible = true;
+                            item.Box.Position = iPos; item.Box.Size = iSize; item.Box.Transparency = alpha
+                            item.Txt.Visible = true;
+                            item.Txt.Position = iPos + Vector2.new(5, 4); item.Txt.Text = tostring(opt); item.Txt.Transparency = alpha
+                            item.Txt.Font = Library.Theme.Font
+
+                            local isSelected = El.SelectedMap[opt]
+
+                            if IsMouseOver(iPos, iSize) then
+                                item.Box.Color = isSelected and Library.Theme.Accent or Library.Theme.Outline
+                                item.Txt.Color = isSelected and Color3.new(0,0,0) or Library.Theme.Text
+                                if MouseClicked and alpha > 0.9 then
+                                    El.SelectedMap[opt] = not El.SelectedMap[opt]
+                                    UpdateDisplayString()
+                                    local currentList = GetSelectedList()
+                                    if flag then Library.Flags[flag] = currentList end
+                                    if callback then callback(currentList) end
+                                end
+                            else
+                                item.Box.Color = isSelected and Library.Theme.Accent or Library.Theme.Sidebar
+                                item.Txt.Color = isSelected and Color3.new(0,0,0) or Library.Theme.Text
                             end
                             yOff = yOff + 22
                         end
